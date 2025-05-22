@@ -47,7 +47,7 @@ usage() {
     echo -e "      Example: $(basename "$0") ${LIGHT_GREEN}edit${RESET} myserver user@newserver.com -p 2223"
     echo -e "  ${LIGHT_GREEN}help, -h, --help${RESET}"
     echo -e "      Displays this help message."
-    echo -e "  ${LIGHT_GREEN}install-completions${RESET}"
+    echo -e "  ${LIGHT_GREEN}completions${RESET}"
     echo -e "      Installs bash tab completion for sheesh."
 }
 
