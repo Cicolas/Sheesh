@@ -7,7 +7,7 @@ _sheesh_completions() {
 
     local config_file="$HOME/.sheesh"
     # Define the main commands your script accepts
-    local main_commands="add connect c list ls remove rm edit help"
+    local main_commands="add connect c list ls remove rm edit help completions"
 
     # Scenario 1: Completing the main command itself
     # This happens when COMP_CWORD is 1 (i.e., we are completing the word right after "sheesh" or "sheesh.sh")
