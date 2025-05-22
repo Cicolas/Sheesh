@@ -1,5 +1,12 @@
 # sheesh - A Shell SSH Connection Manager
 
+<p>
+  <a href="http://unlicense.org/">
+    <img src="https://img.shields.io/badge/license-Unlicense-blue.svg" alt="License: Unlicense">
+  </a>
+  <img src="https://img.shields.io/badge/Made%20with-Bash-1f425f.svg" alt="Made with Bash">
+</p>
+
 `sheesh` is a command-line tool designed to simplify managing and connecting to multiple SSH servers. It allows you to save SSH connection details with memorable aliases and quickly reconnect.
 
 ## Genesis & Purpose
