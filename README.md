@@ -1,4 +1,4 @@
-# sheesh - An SSH Connection Manager
+# sheesh - A Shell SSH Connection Manager
 
 `sheesh` is a command-line tool designed to simplify managing and connecting to multiple SSH servers. It allows you to save SSH connection details with memorable aliases and quickly reconnect.
 
