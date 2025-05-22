@@ -24,7 +24,7 @@ LIGHT_YELLOW='\033[1;33m'
 LIGHT_CYAN='\033[1;36m'
 
 # Configuration file path
-CONFIG_FILE="$HOME/.ssh_manager_connections"
+CONFIG_FILE="$HOME/.sheesh"
 
 # Ensure config file exists
 touch "$CONFIG_FILE"
@@ -47,6 +47,8 @@ usage() {
     echo -e "      Example: $(basename "$0") ${LIGHT_GREEN}edit${RESET} myserver user@newserver.com -p 2223"
     echo -e "  ${LIGHT_GREEN}help, -h, --help${RESET}"
     echo -e "      Displays this help message."
+    echo -e "  ${LIGHT_GREEN}install-completions${RESET}"
+    echo -e "      Installs bash tab completion for sheesh."
 }
 
 # Function to check if an alias exists
@@ -70,13 +72,13 @@ add_connection() {
     local connection_details="$*"
 
     if [ -z "$alias_name" ] || [ -z "$connection_details" ]; then
-        echo "Error: Alias and connection details are required for 'add'." >&2
+        echo -e "${RED}Error: Alias and connection details are required for 'add'.${RESET}" >&2
         usage
         exit 1
     fi
 
     if alias_exists "$alias_name"; then
-        echo "Error: Alias '$alias_name' already exists. Use 'edit' to modify or 'remove' first." >&2
+        echo -e "${RED}Error: Alias '${alias_name}' already exists. Use 'edit' to modify or 'remove' first.${RESET}" >&2
         exit 1
     fi
 
@@ -126,7 +128,7 @@ list_connections() {
 connect_to_alias() {
     local alias_name="$1"
     if [ -z "$alias_name" ]; then
-        echo "Error: Alias is required for 'connect'." >&2
+        echo -e "${RED}Error: Alias is required for 'connect'.${RESET}" >&2
         usage
         exit 1
     fi
@@ -136,12 +138,12 @@ connect_to_alias() {
     connection_details=$(awk -F':' -v alias="$alias_name" '$1 == alias {sub($1":", ""); print; exit}' "$CONFIG_FILE")
 
     if [ -z "$connection_details" ]; then
-        echo "Error: Alias '$alias_name' not found." >&2
+        echo -e "${RED}Error: Alias '${alias_name}' not found.${RESET}" >&2
         list_connections
         exit 1
     fi
 
-    echo "Connecting to '$alias_name'..."
+    echo -e "${BOLD}Connecting to '${LIGHT_YELLOW}${alias_name}${RESET}${BOLD}'...${RESET}"
     # If the stored string starts with "ssh ", execute it as a full command.
     # This allows storing complex commands like those with port forwarding or jump hosts.
     if [[ "$connection_details" == "ssh "* ]]; then
@@ -159,13 +161,13 @@ connect_to_alias() {
 remove_connection() {
     local alias_name="$1"
     if [ -z "$alias_name" ]; then
-        echo "Error: Alias is required for 'remove'." >&2
+        echo -e "${RED}Error: Alias is required for 'remove'.${RESET}" >&2
         usage
         exit 1
     fi
 
     if ! alias_exists "$alias_name"; then
-        echo "Error: Alias '$alias_name' not found." >&2
+        echo -e "${RED}Error: Alias '${alias_name}' not found.${RESET}" >&2
         exit 1
     fi
 
@@ -182,13 +184,13 @@ edit_connection() {
     local new_connection_details="$*"
 
     if [ -z "$alias_name" ] || [ -z "$new_connection_details" ]; then
-        echo "Error: Alias and new connection details are required for 'edit'." >&2
+        echo -e "${RED}Error: Alias and new connection details are required for 'edit'.${RESET}" >&2
         usage
         exit 1
     fi
 
     if ! alias_exists "$alias_name"; then
-        echo "Error: Alias '$alias_name' not found. Use 'add' to create it." >&2
+        echo -e "${RED}Error: Alias '${alias_name}' not found. Use 'add' to create it.${RESET}" >&2
         exit 1
     fi
 
@@ -197,6 +199,49 @@ edit_connection() {
     echo "${alias_name}:${new_connection_details}" >> "${CONFIG_FILE}.tmp"
     mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
     echo "Connection '$alias_name' updated."
+}
+
+# Function to install bash completions
+install_completions() {
+    echo -e "${BOLD}Attempting to install bash completions...${RESET}"
+
+    # Try to determine the directory of the sheesh.sh script
+    local script_path
+    script_path=$(readlink -f "$0")
+    local script_dir
+    script_dir=$(dirname "$script_path")
+    local completion_script_path="${script_dir}/sheesh-completion.sh" # Assuming completion script is co-located
+
+    if [ ! -f "$completion_script_path" ]; then
+        echo -e "${RED}Error: Completion script not found at '${completion_script_path}'.${RESET}" >&2
+        echo -e "${YELLOW}Please ensure 'sheesh-completion.sh' is in the same directory as 'sheesh.sh'.${RESET}" >&2
+        return 1
+    fi
+
+    local bashrc_file="$HOME/.bashrc"
+    local source_line="source \"${completion_script_path}\"" # Quote path in case of spaces
+
+    if [ ! -f "$bashrc_file" ]; then
+        echo -e "${YELLOW}Warning: '${bashrc_file}' not found. Creating it.${RESET}"
+        touch "$bashrc_file"
+    fi
+
+    if grep -Fxq -- "$source_line" "$bashrc_file"; then
+        echo -e "${LIGHT_GREEN}Completions already seem to be installed in '${bashrc_file}'.${RESET}"
+        echo -e "If it's not working, try opening a new terminal or running: ${BOLD}source ~/.bashrc${RESET}"
+    else
+        echo -e "Adding the following line to '${bashrc_file}':"
+        echo -e "  ${CYAN}${source_line}${RESET}"
+        echo "$source_line" >> "$bashrc_file"
+        echo -e "${LIGHT_GREEN}Successfully added completion setup to '${bashrc_file}'.${RESET}"
+        echo -e "To activate completions, please open a new terminal or run:"
+        echo -e "  ${BOLD}source ~/.bashrc${RESET}"
+    fi
+
+    echo -e "\n${BOLD}Note:${RESET} The completion script registers completions for 'sheesh.sh', 'sheesh', and './sheesh.sh'."
+    echo -e "If you invoke the script by a different name or alias, you might need to adjust"
+    echo -e "'${completion_script_path}' accordingly (the 'complete -F ...' lines at the end)."
+    return 0
 }
 
 
@@ -228,8 +273,11 @@ case "$COMMAND" in
     help|-h|--help)
         usage
         ;;
+    completions)
+        install_completions
+        ;;
     *)
-        echo "Error: Unknown command '$COMMAND'" >&2
+        echo -e "${RED}Error: Unknown command '${COMMAND}'.${RESET}" >&2
         usage
         exit 1
         ;;
