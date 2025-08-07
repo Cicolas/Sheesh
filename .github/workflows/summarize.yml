@@ -1,129 +1,85 @@
-name: Summarize PR Commits
+# .github/workflows/pr-summary.yml
 
+# Name of the workflow
+name: 'AI PR Summarizer'
+
+# Controls when the workflow will run
 on:
+  # Triggers the workflow on pull request events for the main branch
   pull_request:
-    types: [opened, reopened, synchronize]
+    types: [opened, synchronize] # Runs when a PR is opened or updated with new commits
 
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  summarize-commits:
+  summarize:
+    # The type of runner that the job will run on
     runs-on: ubuntu-latest
+    
+    # Permissions needed for this job
     permissions:
-      issues: write # This is the key line to fix the 403 error.
+      pull-requests: write # To comment on the pull request
+      contents: read       # To check out the repository code
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      - name: Fetch PR Changes and Summarize
-        uses: actions/github-script@v6
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      # 1. Checkout the repository code
+      # This step checks out your repository under $GITHUB_WORKSPACE, so your job can access it.
+      - name: Checkout Repository
+        uses: actions/checkout@v4
         with:
+          fetch-depth: 0 # Fetches all history for all branches and tags, required for a full diff
+
+      # 2. Get the difference between the base and head of the PR
+      # This step calculates the diff of the pull request to be sent to the AI model.
+      - name: Get PR Diff
+        id: diff
+        run: |
+          # The diff command compares the base of the PR with the head
+          DIFF_CONTENT=$(git diff ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
+          
+          # We use a heredoc to handle multiline diff content and save it to a GitHub Actions output variable
+          echo "diff_content<<EOF" >> $GITHUB_OUTPUT
+          echo "$DIFF_CONTENT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      # 3. Generate the summary using the Gemini API
+      # This step sends the code diff to the Gemini API and gets a summary.
+      - name: Generate Summary with Gemini
+        id: gemini
+        run: |
+          # The prompt for the AI model. You can customize this to change the style of the summary.
+          PROMPT="Please summarize the following code changes from a pull request. Provide a brief, high-level explanation suitable for a PR comment. Focus on the 'what' and 'why' of the changes, not just a line-by-line description. Keep it concise and easy to read. Here is the diff:"
+
+          # The cURL command to call the Gemini API
+          # It sends the prompt and the diff content.
+          # The API key is securely accessed from GitHub Secrets.
+          API_RESPONSE=$(curl -s -H 'Content-Type: application/json' \
+            -d '{"contents":[{"parts":[{"text": "'"${PROMPT}"'\n\n${{ steps.diff.outputs.diff_content }}"}]}]}' \
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${{ secrets.GEMINI_API_KEY }}")
+
+          # We use jq to parse the JSON response from the API and extract the summary text.
+          # This handles potential errors if the API response is not as expected.
+          SUMMARY=$(echo "$API_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // "Could not generate a summary."')
+
+          # Save the final summary to a GitHub Actions output variable
+          echo "summary<<EOF" >> $GITHUB_OUTPUT
+          echo "$SUMMARY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      # 4. Post the summary as a comment on the pull request
+      # This step uses the GitHub API to create a new comment on the PR.
+      - name: Post Summary as PR Comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const { GITHUB_TOKEN } = process.env;
-            const { owner, repo } = context.repo;
-            const issue_number = context.issue.number;
+            // Get the summary from the previous step's output
+            const summary = `${{ steps.gemini.outputs.summary }}`;
 
-            // --- Function to post a comment to the PR ---
-            async function postComment(body) {
-              await github.rest.issues.createComment({
-                owner,
-                repo,
-                issue_number,
-                body,
-              });
-            }
-
-            // --- Initial checks for API Key ---
-            const apiKey = process.env.GEMINI_API_KEY;
-            if (!apiKey) {
-              console.error("GEMINI_API_KEY is not set as a repository secret.");
-              await postComment("❌ **PR Summarizer Bot Failed:** The `GEMINI_API_KEY` secret is not configured. Please add it to your repository's secrets.");
-              return;
-            }
-
-            // --- Fetch the PR diff ---
-            const pr = await github.rest.pulls.get({
-              owner,
-              repo,
-              pull_number: issue_number,
-              mediaType: {
-                format: 'diff'
-              }
+            // Post the comment to the pull request
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `### ✨ AI-Generated Summary\n\n${summary}`
             });
-
-            let diffContent = pr.data;
-
-            // --- Handle large diffs by truncating them ---
-            const maxPromptLength = 16000; // A safe limit to avoid token issues
-            if (diffContent.length > maxPromptLength) {
-              const truncationMessage = `... (Diff truncated to fit within token limit. Original size: ${diffContent.length} characters)`;
-              diffContent = diffContent.substring(0, maxPromptLength) + truncationMessage;
-              console.warn("Diff content was truncated to prevent token limit errors.");
-            }
-
-            const prompt = `You are a helpful and professional GitHub PR summarization bot.
-            Your task is to analyze the following code changes from a pull request and generate a single,
-            well-formatted summary. The summary should be concise, professional, and highlight
-            the key changes, new features, and bug fixes.
-
-            Here are the code changes in diff format:
-            ${diffContent}
-
-            Please provide the summary in a simple, readable format.`;
-
-            console.log(`Prompt length: ${prompt.length} characters.`);
-            
-            // --- Function to make a fetch call with exponential backoff ---
-            async function fetchWithRetry(url, options, retries = 5) {
-              for (let i = 0; i < retries; i++) {
-                try {
-                  const response = await fetch(url, options);
-                  if (response.ok) {
-                    return response;
-                  }
-                  if (response.status === 429 && i < retries - 1) { // 429 Too Many Requests
-                    const delay = Math.pow(2, i) * 1000;
-                    console.log(`Retrying API call in ${delay}ms...`);
-                    await new Promise(resolve => setTimeout(resolve, delay));
-                    continue;
-                  }
-                  throw new Error(`HTTP error! status: ${response.status} - ${response.statusText}`);
-                } catch (e) {
-                  console.error(`Attempt ${i + 1} failed:`, e.message);
-                  if (i < retries - 1) {
-                    const delay = Math.pow(2, i) * 1000;
-                    await new Promise(resolve => setTimeout(resolve, delay));
-                    continue;
-                  }
-                  throw e;
-                }
-              }
-            }
-            
-            // --- Call the Gemini API to get the summary ---
-            try {
-              const payload = {
-                contents: [{
-                  role: "user",
-                  parts: [{ text: prompt }]
-                }]
-              };
-              const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
-
-              const response = await fetchWithRetry(apiUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-              });
-
-              const result = await response.json();
-              const summary = result?.candidates?.[0]?.content?.parts?.[0]?.text;
-
-              if (summary) {
-                await postComment(`**PR Summary (from code changes):**\n\n${summary}`);
-              } else {
-                console.error("API response did not contain a summary.");
-                await postComment(`⚠️ **PR Summarizer Bot Failed:** Could not generate a summary. The LLM may have been unable to process the request.`);
-              }
-            } catch (err) {
-              console.error("An unhandled error occurred during summarization:", err);
-              await postComment(`❌ **PR Summarizer Bot Failed:** An unexpected error occurred. Check the Actions logs for details.`);
-            }
-
