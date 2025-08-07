@@ -120,7 +120,7 @@ list_connections() {
         # Using -e with printf is not standard for variable expansion, but echo -e is used above.
         # For printf, the escape sequences are interpreted directly if they are part of the format string.
         # shellcheck disable=SC2059 # We are intentionally using variables in printf format string for colors
-        printf "${LIGHT_YELLOW}%-15.15s${RESET} ${WHITE}->${RESET} ${LIGHT_CYAN}%-25.25s${RESET} ${WHITE}|${RESET} ${WHITE}%-30.30s${RESET}\n" "$alias_name" "$display_host" "$display_details"
+        printf "${LIGHT_YELLOW}%-15.15s${RESET} ${WHITE}->${RESET} ${LIGHT_CYAN}%25.25s${RESET} ${WHITE}|${RESET} ${WHITE}%-30.30s${RESET}\n" "$alias_name" "$display_host" "$display_details"
     done < "$CONFIG_FILE"
 }
 
