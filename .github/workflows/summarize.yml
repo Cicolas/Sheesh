@@ -1,0 +1,96 @@
+name: Summarize PR Commits
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+jobs:
+  summarize-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch PR Changes and Summarize
+        uses: actions/github-script@v6
+        env:
+          API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              mediaType: {
+                format: 'diff'
+              }
+            });
+
+            const diffContent = pr.data;
+
+            const prompt = `You are a helpful and professional GitHub PR summarization bot.
+            Your task is to analyze the following code changes from a pull request and generate a single,
+            well-formatted summary. The summary should be concise, professional, and highlight
+            the key changes, new features, and bug fixes.
+
+            Here are the code changes in diff format:
+            ${diffContent}
+
+            Please provide the summary in a simple, readable format.`;
+
+            // Function to make a fetch call with exponential backoff
+            async function fetchWithRetry(url, options, retries = 5) {
+              for (let i = 0; i < retries; i++) {
+                try {
+                  const response = await fetch(url, options);
+                  if (response.ok) {
+                    return response;
+                  }
+                  if (response.status === 429 && i < retries - 1) { // 429 Too Many Requests
+                    const delay = Math.pow(2, i) * 1000;
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    continue;
+                  }
+                  throw new Error(`HTTP error! status: ${response.status}`);
+                } catch (e) {
+                  if (i < retries - 1) {
+                    const delay = Math.pow(2, i) * 1000;
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    continue;
+                  }
+                  throw e;
+                }
+              }
+            }
+            
+            // Call the Gemini API to get the summary
+            const payload = {
+              contents: [{
+                role: "user",
+                parts: [{ text: prompt }]
+              }]
+            };
+            const apiKey = process.env.GEMINI_API_KEY;
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+
+            const response = await fetchWithRetry(apiUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+
+            const result = await response.json();
+            const summary = result?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+            if (summary) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `**PR Summary (from code changes):**\n\n${summary}`,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `Failed to generate a summary. The LLM may have been unable to process the request.`
+              });
+            }
