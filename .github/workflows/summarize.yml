@@ -7,7 +7,7 @@ name: 'AI PR Summarizer'
 on:
   # Triggers the workflow on pull request events for the main branch
   pull_request:
-    types: [opened, synchronize] # Runs when a PR is opened or updated with new commits
+    types: [opened, reopened, synchronize] # Runs when a PR is opened or updated with new commits
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
@@ -46,16 +46,28 @@ jobs:
       # This step sends the code diff to the Gemini API and gets a summary.
       - name: Generate Summary with Gemini
         id: gemini
+        env:
+          # Pass the diff content and API key as environment variables.
+          # This is safer than injecting them directly into the script.
+          DIFF_CONTENT: ${{ steps.diff.outputs.diff_content }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           # The prompt for the AI model. You can customize this to change the style of the summary.
           PROMPT="Please summarize the following code changes from a pull request. Provide a brief, high-level explanation suitable for a PR comment. Focus on the 'what' and 'why' of the changes, not just a line-by-line description. Keep it concise and easy to read. Here is the diff:"
 
-          # The cURL command to call the Gemini API
-          # It sends the prompt and the diff content.
-          # The API key is securely accessed from GitHub Secrets.
-          API_RESPONSE=$(curl -s -H 'Content-Type: application/json' \
-            -d '{"contents":[{"parts":[{"text": "'"${PROMPT}"'\n\n${{ steps.diff.outputs.diff_content }}"}]}]}' \
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${{ secrets.GEMINI_API_KEY }}")
+          # Combine prompt and diff content.
+          FULL_PROMPT="${PROMPT}\n\n${DIFF_CONTENT}"
+
+          # Use jq to safely construct the JSON payload.
+          # The --arg flag treats the input as a raw string, handling all special characters automatically.
+          JSON_PAYLOAD=$(jq -n --arg text "$FULL_PROMPT" \
+            '{ "contents": [ { "parts": [ { "text": $text } ] } ] }')
+
+          # The cURL command to call the Gemini API with the safely constructed JSON payload.
+          API_RESPONSE=$(curl -s -X POST \
+            -H "Content-Type: application/json" \
+            -d "$JSON_PAYLOAD" \
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}")
 
           # We use jq to parse the JSON response from the API and extract the summary text.
           # This handles potential errors if the API response is not as expected.
