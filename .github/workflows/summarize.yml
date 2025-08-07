@@ -7,6 +7,8 @@ on:
 jobs:
   summarize-commits:
     runs-on: ubuntu-latest
+    permissions:
+      issues: write # This is the key line to fix the 403 error.
     steps:
       - name: Fetch PR Changes and Summarize
         uses: actions/github-script@v6
@@ -124,3 +126,4 @@ jobs:
               console.error("An unhandled error occurred during summarization:", err);
               await postComment(`❌ **PR Summarizer Bot Failed:** An unexpected error occurred. Check the Actions logs for details.`);
             }
+
