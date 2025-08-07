@@ -11,19 +11,50 @@ jobs:
       - name: Fetch PR Changes and Summarize
         uses: actions/github-script@v6
         env:
-          API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         with:
           script: |
+            const { GITHUB_TOKEN } = process.env;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+
+            // --- Function to post a comment to the PR ---
+            async function postComment(body) {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body,
+              });
+            }
+
+            // --- Initial checks for API Key ---
+            const apiKey = process.env.GEMINI_API_KEY;
+            if (!apiKey) {
+              console.error("GEMINI_API_KEY is not set as a repository secret.");
+              await postComment("❌ **PR Summarizer Bot Failed:** The `GEMINI_API_KEY` secret is not configured. Please add it to your repository's secrets.");
+              return;
+            }
+
+            // --- Fetch the PR diff ---
             const pr = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.issue.number,
+              owner,
+              repo,
+              pull_number: issue_number,
               mediaType: {
                 format: 'diff'
               }
             });
 
-            const diffContent = pr.data;
+            let diffContent = pr.data;
+
+            // --- Handle large diffs by truncating them ---
+            const maxPromptLength = 16000; // A safe limit to avoid token issues
+            if (diffContent.length > maxPromptLength) {
+              const truncationMessage = `... (Diff truncated to fit within token limit. Original size: ${diffContent.length} characters)`;
+              diffContent = diffContent.substring(0, maxPromptLength) + truncationMessage;
+              console.warn("Diff content was truncated to prevent token limit errors.");
+            }
 
             const prompt = `You are a helpful and professional GitHub PR summarization bot.
             Your task is to analyze the following code changes from a pull request and generate a single,
@@ -35,7 +66,9 @@ jobs:
 
             Please provide the summary in a simple, readable format.`;
 
-            // Function to make a fetch call with exponential backoff
+            console.log(`Prompt length: ${prompt.length} characters.`);
+            
+            // --- Function to make a fetch call with exponential backoff ---
             async function fetchWithRetry(url, options, retries = 5) {
               for (let i = 0; i < retries; i++) {
                 try {
@@ -45,11 +78,13 @@ jobs:
                   }
                   if (response.status === 429 && i < retries - 1) { // 429 Too Many Requests
                     const delay = Math.pow(2, i) * 1000;
+                    console.log(`Retrying API call in ${delay}ms...`);
                     await new Promise(resolve => setTimeout(resolve, delay));
                     continue;
                   }
-                  throw new Error(`HTTP error! status: ${response.status}`);
+                  throw new Error(`HTTP error! status: ${response.status} - ${response.statusText}`);
                 } catch (e) {
+                  console.error(`Attempt ${i + 1} failed:`, e.message);
                   if (i < retries - 1) {
                     const delay = Math.pow(2, i) * 1000;
                     await new Promise(resolve => setTimeout(resolve, delay));
@@ -60,37 +95,32 @@ jobs:
               }
             }
             
-            // Call the Gemini API to get the summary
-            const payload = {
-              contents: [{
-                role: "user",
-                parts: [{ text: prompt }]
-              }]
-            };
-            const apiKey = process.env.GEMINI_API_KEY;
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+            // --- Call the Gemini API to get the summary ---
+            try {
+              const payload = {
+                contents: [{
+                  role: "user",
+                  parts: [{ text: prompt }]
+                }]
+              };
+              const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
 
-            const response = await fetchWithRetry(apiUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload)
-            });
-
-            const result = await response.json();
-            const summary = result?.candidates?.[0]?.content?.parts?.[0]?.text;
-
-            if (summary) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: `**PR Summary (from code changes):**\n\n${summary}`,
+              const response = await fetchWithRetry(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
               });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: `Failed to generate a summary. The LLM may have been unable to process the request.`
-              });
+
+              const result = await response.json();
+              const summary = result?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+              if (summary) {
+                await postComment(`**PR Summary (from code changes):**\n\n${summary}`);
+              } else {
+                console.error("API response did not contain a summary.");
+                await postComment(`⚠️ **PR Summarizer Bot Failed:** Could not generate a summary. The LLM may have been unable to process the request.`);
+              }
+            } catch (err) {
+              console.error("An unhandled error occurred during summarization:", err);
+              await postComment(`❌ **PR Summarizer Bot Failed:** An unexpected error occurred. Check the Actions logs for details.`);
             }
