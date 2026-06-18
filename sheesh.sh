@@ -39,6 +39,10 @@ usage() {
     echo -e "      Example: $(basename "$0") ${LIGHT_GREEN}add${RESET} jump 'ssh -J user@jumphost user@targetserver'"
     echo -e "  ${LIGHT_GREEN}connect${RESET} ${LIGHT_BLUE}<alias>${RESET} (or ${LIGHT_GREEN}c${RESET} ${LIGHT_BLUE}<alias>${RESET})"
     echo -e "      Example: $(basename "$0") ${LIGHT_GREEN}connect${RESET} myserver"
+    echo -e "  ${LIGHT_GREEN}cp${RESET} ${LIGHT_BLUE}<source>${RESET} ${LIGHT_BLUE}<destination>${RESET}"
+    echo -e "      Either source or destination can be ${LIGHT_BLUE}alias:path${RESET} using a saved connection."
+    echo -e "      Example: $(basename "$0") ${LIGHT_GREEN}cp${RESET} myserver:/etc/hostname ./hostname_copy"
+    echo -e "      Example: $(basename "$0") ${LIGHT_GREEN}cp${RESET} ./file.txt myserver:/tmp/"
     echo -e "  ${LIGHT_GREEN}list${RESET} (or ${LIGHT_GREEN}ls${RESET})"
     echo -e "      Example: $(basename "$0") ${LIGHT_GREEN}list${RESET}"
     echo -e "  ${LIGHT_GREEN}remove${RESET} ${LIGHT_BLUE}<alias>${RESET} (or ${LIGHT_GREEN}rm${RESET} ${LIGHT_BLUE}<alias>${RESET})"
@@ -58,11 +62,7 @@ alias_exists() {
     #      -v search="$alias_name" passes shell var to awk var.
     #      '$1 == search { exit 0 }' if first field matches, exit with 0 (found).
     #      'END { exit 1 }' if loop finishes, exit with 1 (not found).
-    if awk -F: -v search="$alias_name" '$1 == search { exit 0 } END { exit 1 }' "$CONFIG_FILE"; then
-        return 0 # Exists
-    else
-        return 1 # Does not exist
-    fi
+    awk -F: -v search="$alias_name" '$1 == search {found=1; exit} END {exit !found}' "$CONFIG_FILE"
 }
 
 # Function to add a new connection
@@ -126,12 +126,14 @@ list_connections() {
 
 # Function to connect to a saved alias
 connect_to_alias() {
-    local alias_name="$1"
+    local alias_name="${1:-}"
     if [ -z "$alias_name" ]; then
         echo -e "${RED}Error: Alias is required for 'connect'.${RESET}" >&2
         usage
         exit 1
     fi
+    shift
+    local extra_flags="$*"
 
     local connection_details
     # awk: Find line where $1 is alias, remove "alias:" part, print rest, then exit.
@@ -147,13 +149,14 @@ connect_to_alias() {
     # If the stored string starts with "ssh ", execute it as a full command.
     # This allows storing complex commands like those with port forwarding or jump hosts.
     if [[ "$connection_details" == "ssh "* ]]; then
-        echo "Executing as full command: $connection_details"
-        eval "$connection_details"
+        echo "Executing as full command: $connection_details${extra_flags:+ $extra_flags}"
+        # shellcheck disable=SC2086 # We want word splitting for $extra_flags here
+        eval "$connection_details" $extra_flags
     else
         # Otherwise, assume it's arguments for the ssh command (e.g., user@host -p 2222).
-        echo "Executing: ssh $connection_details"
-        # shellcheck disable=SC2086 # We want word splitting for $connection_details here
-        ssh $connection_details
+        echo "Executing: ssh $connection_details${extra_flags:+ $extra_flags}"
+        # shellcheck disable=SC2086 # We want word splitting for $connection_details and $extra_flags here
+        ssh $connection_details $extra_flags
     fi
 }
 
@@ -199,6 +202,67 @@ edit_connection() {
     echo "${alias_name}:${new_connection_details}" >> "${CONFIG_FILE}.tmp"
     mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
     echo "Connection '$alias_name' updated."
+}
+
+# Function to copy files using scp, with sheesh alias resolution
+copy_files() {
+    local source="${1:-}"
+    local dest="${2:-}"
+
+    if [ -z "$source" ] || [ -z "$dest" ]; then
+        echo -e "${RED}Error: Source and destination are required for 'cp'.${RESET}" >&2
+        usage
+        exit 1
+    fi
+
+    local scp_source="$source"
+    local scp_dest="$dest"
+    local scp_opts=""
+
+    if [[ "$source" == *:* ]]; then
+        local src_alias="${source%%:*}"
+        local src_path="${source#*:}"
+        if alias_exists "$src_alias"; then
+            local src_conn
+            src_conn=$(awk -F':' -v alias="$src_alias" '$1 == alias {sub($1":", ""); print; exit}' "$CONFIG_FILE")
+            if [[ "$src_conn" == "ssh "* ]]; then
+                echo -e "${RED}Error: Alias '${src_alias}' uses a full SSH command, which is not supported by 'cp'.${RESET}" >&2
+                exit 1
+            fi
+            local src_host="${src_conn%% *}"
+            if [[ "$src_conn" == *" "* ]]; then
+                local src_ssh_opts="${src_conn#* }"
+                scp_opts+=" ${src_ssh_opts//-p /-P }"
+            fi
+            scp_source="${src_host}:${src_path}"
+        fi
+    fi
+
+    if [[ "$dest" == *:* ]]; then
+        local dst_alias="${dest%%:*}"
+        local dst_path="${dest#*:}"
+        if alias_exists "$dst_alias"; then
+            local dst_conn
+            dst_conn=$(awk -F':' -v alias="$dst_alias" '$1 == alias {sub($1":", ""); print; exit}' "$CONFIG_FILE")
+            if [[ "$dst_conn" == "ssh "* ]]; then
+                echo -e "${RED}Error: Alias '${dst_alias}' uses a full SSH command, which is not supported by 'cp'.${RESET}" >&2
+                exit 1
+            fi
+            local dst_host="${dst_conn%% *}"
+            if [[ "$dst_conn" == *" "* ]]; then
+                local dst_ssh_opts="${dst_conn#* }"
+                scp_opts+=" ${dst_ssh_opts//-p /-P }"
+            fi
+            scp_dest="${dst_host}:${dst_path}"
+        fi
+    fi
+
+    scp_opts="${scp_opts# }"  # trim leading space
+
+    echo -e "${BOLD}Copying '${LIGHT_YELLOW}${source}${RESET}${BOLD}' to '${LIGHT_YELLOW}${dest}${RESET}${BOLD}'...${RESET}"
+    echo "Executing: scp${scp_opts:+ $scp_opts} $scp_source $scp_dest"
+    # shellcheck disable=SC2086
+    scp $scp_opts "$scp_source" "$scp_dest"
 }
 
 # Function to install bash completions
@@ -260,6 +324,9 @@ case "$COMMAND" in
         ;;
     connect|c)
         connect_to_alias "$@"
+        ;;
+    cp)
+        copy_files "$@"
         ;;
     list|ls)
         list_connections

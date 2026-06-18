@@ -7,7 +7,7 @@ _sheesh_completions() {
 
     local config_file="$HOME/.sheesh"
     # Define the main commands your script accepts
-    local main_commands="add connect c list ls remove rm edit help completions"
+    local main_commands="add connect c list ls remove rm edit cp help completions"
 
     # Scenario 1: Completing the main command itself
     # This happens when COMP_CWORD is 1 (i.e., we are completing the word right after "sheesh" or "sheesh.sh")
@@ -20,6 +20,18 @@ _sheesh_completions() {
     # This happens when COMP_CWORD is 2 (i.e., we are completing the word after a main command)
     if [[ ${COMP_CWORD} -eq 2 ]]; then
         case "$prev_word" in
+            cp)
+                if [ -f "$config_file" ]; then
+                    local alias_list
+                    mapfile -t alias_list < <(awk -F: 'NF > 0 {print $1":"}' "$config_file" 2>/dev/null)
+                    if [[ ${#alias_list[@]} -gt 0 ]]; then
+                        COMPREPLY=( $(compgen -W "${alias_list[*]}" -- "$cur_word") )
+                    else
+                        COMPREPLY=()
+                    fi
+                    return 0
+                fi
+                ;;
             connect|c|remove|rm|edit)
                 # These commands expect an alias as their argument.
                 # We'll read aliases from your config file.
