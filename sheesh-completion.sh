@@ -23,7 +23,7 @@ _sheesh_completions() {
             cp)
                 if [ -f "$config_file" ]; then
                     local alias_list
-                    mapfile -t alias_list < <(awk -F: 'NF > 0 {print $1":"}' "$config_file" 2>/dev/null)
+                    mapfile -t alias_list < <(awk -F: '$0 !~ /^[[:space:]]*(#|$)/ && index($0, ":") {print $1":"}' "$config_file" 2>/dev/null)
                     if [[ ${#alias_list[@]} -gt 0 ]]; then
                         COMPREPLY=( $(compgen -W "${alias_list[*]}" -- "$cur_word") )
                     else
@@ -40,7 +40,7 @@ _sheesh_completions() {
                     # Use awk to extract the first field (alias) from each line.
                     # 'NF > 0' ensures we only process non-empty lines.
                     # Errors from awk (e.g., if file is empty/malformed) are suppressed.
-                    mapfile -t alias_list < <(awk -F: 'NF > 0 {print $1}' "$config_file" 2>/dev/null)
+                    mapfile -t alias_list < <(awk -F: '$0 !~ /^[[:space:]]*(#|$)/ && index($0, ":") {print $1}' "$config_file" 2>/dev/null)
 
                     if [[ ${#alias_list[@]} -gt 0 ]]; then
                         COMPREPLY=( $(compgen -W "${alias_list[*]}" -- "$cur_word") )

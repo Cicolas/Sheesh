@@ -29,6 +29,12 @@ CONFIG_FILE="$HOME/.sheesh"
 # Ensure config file exists
 touch "$CONFIG_FILE"
 
+# Returns true for usable connection entries in ~/.sheesh.
+is_config_entry() {
+    local line="$1"
+    [[ "$line" == *:* && ! "$line" =~ ^[[:space:]]*# ]]
+}
+
 # Function to display usage
 usage() {
     echo -e "${BOLD}Usage:${RESET} $(basename "$0") ${LIGHT_BLUE}<command>${RESET} [arguments]"
@@ -62,7 +68,7 @@ alias_exists() {
     #      -v search="$alias_name" passes shell var to awk var.
     #      '$1 == search { exit 0 }' if first field matches, exit with 0 (found).
     #      'END { exit 1 }' if loop finishes, exit with 1 (not found).
-    awk -F: -v search="$alias_name" '$1 == search {found=1; exit} END {exit !found}' "$CONFIG_FILE"
+    awk -F: -v search="$alias_name" '$0 !~ /^[[:space:]]*(#|$)/ && index($0, ":") && $1 == search {found=1; exit} END {exit !found}' "$CONFIG_FILE"
 }
 
 # Function to add a new connection
@@ -92,9 +98,18 @@ list_connections() {
         echo -e "${YELLOW}No connections saved yet.${RESET}"
         return
     fi
-    echo -e "${BOLD}Saved connections:${RESET}"
+    local has_connections=false
     # Read line by line to correctly handle connection details that might contain colons
     while IFS= read -r line; do
+        if ! is_config_entry "$line"; then
+            continue
+        fi
+
+        if [ "$has_connections" = false ]; then
+            echo -e "${BOLD}Saved connections:${RESET}"
+            has_connections=true
+        fi
+
         local alias_name="${line%%:*}"      # Everything before the first colon
         local connection_info="${line#*:}"  # Everything after the first colon
 
@@ -122,6 +137,10 @@ list_connections() {
         # shellcheck disable=SC2059 # We are intentionally using variables in printf format string for colors
         printf "${LIGHT_YELLOW}%-15.15s${RESET} ${WHITE}->${RESET} ${LIGHT_CYAN}%25.25s${RESET} ${WHITE}|${RESET} ${WHITE}%-30.30s${RESET}\n" "$alias_name" "$display_host" "$display_details"
     done < "$CONFIG_FILE"
+
+    if [ "$has_connections" = false ]; then
+        echo -e "${YELLOW}No connections saved yet.${RESET}"
+    fi
 }
 
 # Function to connect to a saved alias
@@ -137,7 +156,7 @@ connect_to_alias() {
 
     local connection_details
     # awk: Find line where $1 is alias, remove "alias:" part, print rest, then exit.
-    connection_details=$(awk -F':' -v alias="$alias_name" '$1 == alias {sub($1":", ""); print; exit}' "$CONFIG_FILE")
+    connection_details=$(awk -F':' -v alias="$alias_name" '$0 !~ /^[[:space:]]*(#|$)/ && index($0, ":") && $1 == alias {sub($1":", ""); print; exit}' "$CONFIG_FILE")
 
     if [ -z "$connection_details" ]; then
         echo -e "${RED}Error: Alias '${alias_name}' not found.${RESET}" >&2
@@ -176,7 +195,7 @@ remove_connection() {
 
     # awk: Print lines where the first field does not match the alias to remove.
     # This output overwrites a temporary file, which then replaces the original.
-    awk -F: -v alias_to_remove="$alias_name" '$1 != alias_to_remove' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+    awk -F: -v alias_to_remove="$alias_name" '$0 ~ /^[[:space:]]*(#|$)/ || !index($0, ":") || $1 != alias_to_remove' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
     echo "Connection '$alias_name' removed."
 }
 
@@ -198,7 +217,7 @@ edit_connection() {
     fi
 
     # Remove old entry by filtering it out, then append the new/updated entry.
-    awk -F: -v alias_to_edit="$alias_name" '$1 != alias_to_edit' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp"
+    awk -F: -v alias_to_edit="$alias_name" '$0 ~ /^[[:space:]]*(#|$)/ || !index($0, ":") || $1 != alias_to_edit' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp"
     echo "${alias_name}:${new_connection_details}" >> "${CONFIG_FILE}.tmp"
     mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
     echo "Connection '$alias_name' updated."
@@ -224,7 +243,7 @@ copy_files() {
         local src_path="${source#*:}"
         if alias_exists "$src_alias"; then
             local src_conn
-            src_conn=$(awk -F':' -v alias="$src_alias" '$1 == alias {sub($1":", ""); print; exit}' "$CONFIG_FILE")
+            src_conn=$(awk -F':' -v alias="$src_alias" '$0 !~ /^[[:space:]]*(#|$)/ && index($0, ":") && $1 == alias {sub($1":", ""); print; exit}' "$CONFIG_FILE")
             if [[ "$src_conn" == "ssh "* ]]; then
                 echo -e "${RED}Error: Alias '${src_alias}' uses a full SSH command, which is not supported by 'cp'.${RESET}" >&2
                 exit 1
@@ -243,7 +262,7 @@ copy_files() {
         local dst_path="${dest#*:}"
         if alias_exists "$dst_alias"; then
             local dst_conn
-            dst_conn=$(awk -F':' -v alias="$dst_alias" '$1 == alias {sub($1":", ""); print; exit}' "$CONFIG_FILE")
+            dst_conn=$(awk -F':' -v alias="$dst_alias" '$0 !~ /^[[:space:]]*(#|$)/ && index($0, ":") && $1 == alias {sub($1":", ""); print; exit}' "$CONFIG_FILE")
             if [[ "$dst_conn" == "ssh "* ]]; then
                 echo -e "${RED}Error: Alias '${dst_alias}' uses a full SSH command, which is not supported by 'cp'.${RESET}" >&2
                 exit 1

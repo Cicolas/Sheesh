@@ -40,7 +40,10 @@ This iteration of `sheesh` was primarily developed as an exercise to explore and
 myserver:user@example.com
 devbox:developer@192.168.1.100 -p 2222 -i ~/.ssh/dev_key
 jump_prod:ssh -J user@jumphost.example.com admin@production.internal
+#oldserver:olduser@192.168.1.50
 ```
+
+Lines beginning with `#` are ignored, so you can comment out a connection without deleting it.
 
 The script will automatically create this file if it doesn't exist when you first use a command like `add`.
 
