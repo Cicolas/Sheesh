@@ -9,11 +9,11 @@
 
 `sheesh` is a command-line tool designed to simplify managing and connecting to multiple SSH servers. It allows you to save SSH connection details with memorable aliases and quickly reconnect.
 
-## Genesis & Purpose
+## Dependencies
 
-This iteration of `sheesh` was primarily developed as an exercise to explore and test the "vibe coding" and iterative development capabilities of Gemini Code Assist. The goal was to see how an AI could help build a functional command-line utility.
-
-**Disclaimer:** This tool was created for experimental and personal use purposes.
+- Bash.
+- OpenSSH client (`ssh`) for connecting to servers and `scp` for copying files.
+- Netcat (`nc`) with support for `-z` and `-w` for the `ping` command.
 
 ## Installation
 
