@@ -53,7 +53,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           # The prompt for the AI model. You can customize this to change the style of the summary.
-          PROMPT="Please summarize the following code changes from a pull request. Provide a brief, high-level explanation suitable for a PR comment, after write some topics summarizing may key changes were done, and rank them by priority. Focus on the 'what' and 'why' of the changes, not just a line-by-line description. Keep it concise and easy to read. Here is the diff:"
+          PROMPT="Please summarize the following code changes from a pull request. Provide a brief, high-level explanation suitable for a PR comment, after write some topics summarizing key changes were done, and rank them by priority. Focus on the 'what' and 'why' of the changes, not just a line-by-line description. Keep it concise and easy to read. On the last part of the PR write an explanation of all the changes that are needed to run that implementation, such as migrations, environment configuration, etc... based on this last topic give an awareness Level to this PR on top of the first topoic. use emojis and subtitles. Here is the diff:"
 
           # Combine prompt and diff content.
           FULL_PROMPT="${PROMPT}\n\n${DIFF_CONTENT}"

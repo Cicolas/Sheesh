@@ -1,9 +1,5 @@
 # sheesh - A Shell SSH Connection Manager
 
-<p align="center">
-  <img src="./sheesh-logo.jpeg" alt="sheesh Logo" width="200"/>
-</p>
-
 <p>
   <a href="http://unlicense.org/">
     <img src="https://img.shields.io/badge/license-Unlicense-blue.svg" alt="License: Unlicense">
