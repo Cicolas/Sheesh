@@ -9,11 +9,11 @@
 
 `sheesh` is a command-line tool designed to simplify managing and connecting to multiple SSH servers. It allows you to save SSH connection details with memorable aliases and quickly reconnect.
 
-## Genesis & Purpose
+## Dependencies
 
-This iteration of `sheesh` was primarily developed as an exercise to explore and test the "vibe coding" and iterative development capabilities of Gemini Code Assist. The goal was to see how an AI could help build a functional command-line utility.
-
-**Disclaimer:** This tool was created for experimental and personal use purposes.
+- Bash.
+- OpenSSH client (`ssh`) for connecting to servers and `scp` for copying files.
+- Netcat (`nc`) with support for `-z` and `-w` for the `ping` command.
 
 ## Installation
 
@@ -36,7 +36,10 @@ This iteration of `sheesh` was primarily developed as an exercise to explore and
 myserver:user@example.com
 devbox:developer@192.168.1.100 -p 2222 -i ~/.ssh/dev_key
 jump_prod:ssh -J user@jumphost.example.com admin@production.internal
+#oldserver:olduser@192.168.1.50
 ```
+
+Lines beginning with `#` are ignored, so you can comment out a connection without deleting it.
 
 The script will automatically create this file if it doesn't exist when you first use a command like `add`.
 
@@ -73,6 +76,18 @@ sheesh <command> [arguments...]
     sheesh connect webserver
     sheesh c devdb
     ```
+
+*   **`ping <server> [--verbose]`**: Checks a saved server's TCP port using `nc -z -w 5 host port`. Requires netcat (`nc`) with these options available.
+    ```bash
+    sheesh ping webserver
+    echo $?  # 0 if reachable; 1 if unreachable or the check fails
+    sheesh ping webserver --verbose
+    # webserver (mywebserver.com:22) is reachable
+    sheesh ping --verbose webserver  # Either argument order works
+    ```
+    Probes are silent unless `--verbose` is supplied, which prints a reachable/unreachable result. Validation and dependency errors always go to stderr. All failures return `1`.
+
+    Saved entries may use `host`, `user@host`, or a full `ssh` command, with SSH flags before or after the destination. Ping extracts the destination and `-p <port>` (also `-p2222`); the port defaults to `22`. Other options are ignored, with standard SSH option operands skipped when finding the host. IPv6 addresses may be raw or bracketed. Ports must be between `1` and `65535`; duplicate port options are rejected.
 
 *   **`remove <alias>` (or `rm <alias>`)**: Removes a saved SSH connection.
     ```bash

@@ -7,7 +7,7 @@ _sheesh_completions() {
 
     local config_file="$HOME/.sheesh"
     # Define the main commands your script accepts
-    local main_commands="add connect c list ls remove rm edit help completions"
+    local main_commands="add connect c list ls remove rm edit cp ping help completions"
 
     # Scenario 1: Completing the main command itself
     # This happens when COMP_CWORD is 1 (i.e., we are completing the word right after "sheesh" or "sheesh.sh")
@@ -16,10 +16,49 @@ _sheesh_completions() {
         return 0
     fi
 
+    # Ping allows the alias and --verbose in either order.
+    if [[ "${COMP_WORDS[1]:-}" == ping ]]; then
+        local has_alias=false has_verbose=false word index
+        local -a candidates=()
+        COMPREPLY=()
+        for (( index=2; index<COMP_CWORD; index++ )); do
+            word="${COMP_WORDS[index]}"
+            if [[ "$word" == --verbose ]]; then
+                has_verbose=true
+            else
+                has_alias=true
+            fi
+        done
+        if [[ "$has_alias" == false && -r "$config_file" ]]; then
+            mapfile -t candidates < <(awk -F: '$0 !~ /^[[:space:]]*(#|$)/ && index($0, ":") {print $1}' "$config_file" 2>/dev/null)
+        fi
+        if [[ "$has_verbose" == false ]]; then
+            candidates+=(--verbose)
+        fi
+        for word in "${candidates[@]}"; do
+            if [[ "$word" == "$cur_word"* ]]; then
+                COMPREPLY+=("$word")
+            fi
+        done
+        return 0
+    fi
+
     # Scenario 2: Completing arguments for specific commands (like aliases)
     # This happens when COMP_CWORD is 2 (i.e., we are completing the word after a main command)
     if [[ ${COMP_CWORD} -eq 2 ]]; then
         case "$prev_word" in
+            cp)
+                if [ -f "$config_file" ]; then
+                    local alias_list
+                    mapfile -t alias_list < <(awk -F: '$0 !~ /^[[:space:]]*(#|$)/ && index($0, ":") {print $1":"}' "$config_file" 2>/dev/null)
+                    if [[ ${#alias_list[@]} -gt 0 ]]; then
+                        COMPREPLY=( $(compgen -W "${alias_list[*]}" -- "$cur_word") )
+                    else
+                        COMPREPLY=()
+                    fi
+                    return 0
+                fi
+                ;;
             connect|c|remove|rm|edit)
                 # These commands expect an alias as their argument.
                 # We'll read aliases from your config file.
@@ -28,7 +67,7 @@ _sheesh_completions() {
                     # Use awk to extract the first field (alias) from each line.
                     # 'NF > 0' ensures we only process non-empty lines.
                     # Errors from awk (e.g., if file is empty/malformed) are suppressed.
-                    mapfile -t alias_list < <(awk -F: 'NF > 0 {print $1}' "$config_file" 2>/dev/null)
+                    mapfile -t alias_list < <(awk -F: '$0 !~ /^[[:space:]]*(#|$)/ && index($0, ":") {print $1}' "$config_file" 2>/dev/null)
 
                     if [[ ${#alias_list[@]} -gt 0 ]]; then
                         COMPREPLY=( $(compgen -W "${alias_list[*]}" -- "$cur_word") )

@@ -26,8 +26,16 @@ LIGHT_CYAN='\033[1;36m'
 # Configuration file path
 CONFIG_FILE="$HOME/.sheesh"
 
-# Ensure config file exists
-touch "$CONFIG_FILE"
+# Ping only reads configuration; keep the existing initialization for other commands.
+if [[ "${1:-}" != ping ]]; then
+    touch "$CONFIG_FILE"
+fi
+
+# Returns true for usable connection entries in ~/.sheesh.
+is_config_entry() {
+    local line="$1"
+    [[ "$line" == *:* && ! "$line" =~ ^[[:space:]]*# ]]
+}
 
 # Function to display usage
 usage() {
@@ -39,6 +47,13 @@ usage() {
     echo -e "      Example: $(basename "$0") ${LIGHT_GREEN}add${RESET} jump 'ssh -J user@jumphost user@targetserver'"
     echo -e "  ${LIGHT_GREEN}connect${RESET} ${LIGHT_BLUE}<alias>${RESET} (or ${LIGHT_GREEN}c${RESET} ${LIGHT_BLUE}<alias>${RESET})"
     echo -e "      Example: $(basename "$0") ${LIGHT_GREEN}connect${RESET} myserver"
+    echo -e "  ${LIGHT_GREEN}ping${RESET} ${LIGHT_BLUE}<alias> [--verbose]${RESET}"
+    echo -e "      Checks TCP reachability using nc (exit 0 if reachable, otherwise 1)."
+    echo -e "      Example: $(basename "$0") ${LIGHT_GREEN}ping${RESET} myserver --verbose"
+    echo -e "  ${LIGHT_GREEN}cp${RESET} ${LIGHT_BLUE}<source>${RESET} ${LIGHT_BLUE}<destination>${RESET}"
+    echo -e "      Either source or destination can be ${LIGHT_BLUE}alias:path${RESET} using a saved connection."
+    echo -e "      Example: $(basename "$0") ${LIGHT_GREEN}cp${RESET} myserver:/etc/hostname ./hostname_copy"
+    echo -e "      Example: $(basename "$0") ${LIGHT_GREEN}cp${RESET} ./file.txt myserver:/tmp/"
     echo -e "  ${LIGHT_GREEN}list${RESET} (or ${LIGHT_GREEN}ls${RESET})"
     echo -e "      Example: $(basename "$0") ${LIGHT_GREEN}list${RESET}"
     echo -e "  ${LIGHT_GREEN}remove${RESET} ${LIGHT_BLUE}<alias>${RESET} (or ${LIGHT_GREEN}rm${RESET} ${LIGHT_BLUE}<alias>${RESET})"
@@ -58,11 +73,7 @@ alias_exists() {
     #      -v search="$alias_name" passes shell var to awk var.
     #      '$1 == search { exit 0 }' if first field matches, exit with 0 (found).
     #      'END { exit 1 }' if loop finishes, exit with 1 (not found).
-    if awk -F: -v search="$alias_name" '$1 == search { exit 0 } END { exit 1 }' "$CONFIG_FILE"; then
-        return 0 # Exists
-    else
-        return 1 # Does not exist
-    fi
+    awk -F: -v search="$alias_name" '$0 !~ /^[[:space:]]*(#|$)/ && index($0, ":") && $1 == search {found=1; exit} END {exit !found}' "$CONFIG_FILE"
 }
 
 # Function to add a new connection
@@ -92,9 +103,18 @@ list_connections() {
         echo -e "${YELLOW}No connections saved yet.${RESET}"
         return
     fi
-    echo -e "${BOLD}Saved connections:${RESET}"
+    local has_connections=false
     # Read line by line to correctly handle connection details that might contain colons
     while IFS= read -r line; do
+        if ! is_config_entry "$line"; then
+            continue
+        fi
+
+        if [ "$has_connections" = false ]; then
+            echo -e "${BOLD}Saved connections:${RESET}"
+            has_connections=true
+        fi
+
         local alias_name="${line%%:*}"      # Everything before the first colon
         local connection_info="${line#*:}"  # Everything after the first colon
 
@@ -122,20 +142,26 @@ list_connections() {
         # shellcheck disable=SC2059 # We are intentionally using variables in printf format string for colors
         printf "${LIGHT_YELLOW}%-15.15s${RESET} ${WHITE}->${RESET} ${LIGHT_CYAN}%25.25s${RESET} ${WHITE}|${RESET} ${WHITE}%-30.30s${RESET}\n" "$alias_name" "$display_host" "$display_details"
     done < "$CONFIG_FILE"
+
+    if [ "$has_connections" = false ]; then
+        echo -e "${YELLOW}No connections saved yet.${RESET}"
+    fi
 }
 
 # Function to connect to a saved alias
 connect_to_alias() {
-    local alias_name="$1"
+    local alias_name="${1:-}"
     if [ -z "$alias_name" ]; then
         echo -e "${RED}Error: Alias is required for 'connect'.${RESET}" >&2
         usage
         exit 1
     fi
+    shift
+    local extra_flags="$*"
 
     local connection_details
     # awk: Find line where $1 is alias, remove "alias:" part, print rest, then exit.
-    connection_details=$(awk -F':' -v alias="$alias_name" '$1 == alias {sub($1":", ""); print; exit}' "$CONFIG_FILE")
+    connection_details=$(awk -F':' -v alias="$alias_name" '$0 !~ /^[[:space:]]*(#|$)/ && index($0, ":") && $1 == alias {sub($1":", ""); print; exit}' "$CONFIG_FILE")
 
     if [ -z "$connection_details" ]; then
         echo -e "${RED}Error: Alias '${alias_name}' not found.${RESET}" >&2
@@ -147,13 +173,14 @@ connect_to_alias() {
     # If the stored string starts with "ssh ", execute it as a full command.
     # This allows storing complex commands like those with port forwarding or jump hosts.
     if [[ "$connection_details" == "ssh "* ]]; then
-        echo "Executing as full command: $connection_details"
-        eval "$connection_details"
+        echo "Executing as full command: $connection_details${extra_flags:+ $extra_flags}"
+        # shellcheck disable=SC2086 # We want word splitting for $extra_flags here
+        eval "$connection_details" $extra_flags
     else
         # Otherwise, assume it's arguments for the ssh command (e.g., user@host -p 2222).
-        echo "Executing: ssh $connection_details"
-        # shellcheck disable=SC2086 # We want word splitting for $connection_details here
-        ssh $connection_details
+        echo "Executing: ssh $connection_details${extra_flags:+ $extra_flags}"
+        # shellcheck disable=SC2086 # We want word splitting for $connection_details and $extra_flags here
+        ssh $connection_details $extra_flags
     fi
 }
 
@@ -173,7 +200,7 @@ remove_connection() {
 
     # awk: Print lines where the first field does not match the alias to remove.
     # This output overwrites a temporary file, which then replaces the original.
-    awk -F: -v alias_to_remove="$alias_name" '$1 != alias_to_remove' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+    awk -F: -v alias_to_remove="$alias_name" '$0 ~ /^[[:space:]]*(#|$)/ || !index($0, ":") || $1 != alias_to_remove' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
     echo "Connection '$alias_name' removed."
 }
 
@@ -195,10 +222,232 @@ edit_connection() {
     fi
 
     # Remove old entry by filtering it out, then append the new/updated entry.
-    awk -F: -v alias_to_edit="$alias_name" '$1 != alias_to_edit' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp"
+    awk -F: -v alias_to_edit="$alias_name" '$0 ~ /^[[:space:]]*(#|$)/ || !index($0, ":") || $1 != alias_to_edit' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp"
     echo "${alias_name}:${new_connection_details}" >> "${CONFIG_FILE}.tmp"
     mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
     echo "Connection '$alias_name' updated."
+}
+
+# Ping extracts the endpoint without executing saved SSH arguments.
+ping_error() {
+    printf 'Error: %s\n' "$1" >&2
+    return 1
+}
+
+ping_alias() {
+    local alias_name='' verbose=false arg
+    for arg in "$@"; do
+        case "$arg" in
+            --verbose)
+                if [[ "$verbose" == true ]]; then
+                    ping_error "Usage: sheesh ping <server> [--verbose]"
+                    return 1
+                fi
+                verbose=true
+                ;;
+            -*)
+                ping_error "Unknown ping option: $arg"
+                return 1
+                ;;
+            *)
+                if [[ -n "$alias_name" || -z "$arg" ]]; then
+                    ping_error "Usage: sheesh ping <server> [--verbose]"
+                    return 1
+                fi
+                alias_name="$arg"
+                ;;
+        esac
+    done
+    if [[ -z "$alias_name" ]]; then
+        ping_error "Usage: sheesh ping <server> [--verbose]"
+        return 1
+    fi
+    if [[ ! -f "$CONFIG_FILE" || ! -r "$CONFIG_FILE" ]]; then
+        ping_error "Cannot read server list: $CONFIG_FILE"
+        return 1
+    fi
+
+    local line connection_details='' found=false
+    # Bash comparison keeps aliases literal, including regex characters and backslashes.
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if is_config_entry "$line" && [[ "${line%%:*}" == "$alias_name" ]]; then
+            connection_details="${line#*:}"
+            found=true
+            break
+        fi
+    done < "$CONFIG_FILE"
+    if [[ "$found" == false ]]; then
+        ping_error "Alias '$alias_name' not found."
+        return 1
+    fi
+
+    # Tokenize shell-style quotes/escapes as data. Never expand or evaluate the entry.
+    local -a words=()
+    local token='' quote='' char escaped=false started=false i
+    for (( i=0; i<${#connection_details}; i++ )); do
+        char="${connection_details:i:1}"
+        if [[ "$escaped" == true ]]; then
+            token+="$char"
+            escaped=false
+        elif [[ "$quote" == "'" ]]; then
+            if [[ "$char" == "'" ]]; then quote=''; else token+="$char"; fi
+        elif [[ "$char" == \\ ]]; then
+            escaped=true
+            started=true
+        elif [[ -n "$quote" ]]; then
+            if [[ "$char" == "$quote" ]]; then quote=''; else token+="$char"; fi
+        elif [[ "$char" == \" || "$char" == "'" ]]; then
+            quote="$char"
+            started=true
+        elif [[ "$char" == ' ' || "$char" == $'\t' ]]; then
+            if [[ "$started" == true ]]; then words+=("$token"); fi
+            token=''
+            started=false
+        else
+            token+="$char"
+            started=true
+        fi
+    done
+    if [[ -n "$quote" || "$escaped" == true ]]; then
+        ping_error "Unterminated quote or escape for alias '$alias_name'."
+        return 1
+    fi
+    if [[ "$started" == true ]]; then words+=("$token"); fi
+
+    local host='' port=22 seen_port=false arg flag value j
+    i=0
+    if [[ "${words[0]:-}" == ssh ]]; then i=1; fi
+    while (( i < ${#words[@]} )); do
+        arg="${words[i]}"
+        if [[ "$arg" == -- ]]; then
+            i=$((i + 1))
+            if [[ -z "$host" ]]; then host="${words[i]:-}"; fi
+            break
+        elif [[ "$arg" == -* ]]; then
+            # Skip SSH option operands so keys, jump hosts, and forwarding targets
+            # cannot be mistaken for the destination. Unknown flags are ignored.
+            for (( j=1; j<${#arg}; j++ )); do
+                flag="${arg:j:1}"
+                case "$flag" in
+                    B|b|c|D|E|e|F|I|i|J|L|l|m|O|o|P|p|Q|R|S|W|w)
+                        value="${arg:j+1}"
+                        if [[ -z "$value" ]]; then
+                            i=$((i + 1))
+                            value="${words[i]:-}"
+                        fi
+                        if [[ "$flag" == p ]]; then
+                            if [[ "$seen_port" == true || ! "$value" =~ ^[0-9]{1,5}$ ]]; then
+                                ping_error "Invalid, missing, or duplicate port for alias '$alias_name'."
+                                return 1
+                            fi
+                            port=$((10#$value))
+                            if (( port < 1 || port > 65535 )); then
+                                ping_error "Port must be between 1 and 65535."
+                                return 1
+                            fi
+                            seen_port=true
+                        fi
+                        break
+                        ;;
+                esac
+            done
+        elif [[ -z "$host" ]]; then
+            host="$arg"
+        fi
+        i=$((i + 1))
+    done
+    if [[ "$host" == *@* ]]; then
+        if [[ ! "$host" =~ ^[a-zA-Z0-9_.-]+@[^@]+$ ]]; then
+            ping_error "Invalid destination for alias '$alias_name'."
+            return 1
+        fi
+        host="${host#*@}"
+    fi
+    if [[ "$host" == \[*\] ]]; then
+        host="${host:1:${#host}-2}"
+    fi
+    if [[ ! "$host" =~ ^[a-zA-Z0-9_:][a-zA-Z0-9_.:%-]*$ ]]; then
+        ping_error "Missing or invalid host for alias '$alias_name'."
+        return 1
+    fi
+    if ! command -v nc >/dev/null 2>&1; then
+        ping_error "nc is required for ping; install netcat."
+        return 1
+    fi
+
+    local status=1 result=unreachable endpoint="$host:$port"
+    if nc -z -w 5 "$host" "$port" >/dev/null 2>&1; then
+        status=0
+        result=reachable
+    fi
+    if [[ "$host" == *:* ]]; then
+        endpoint="[$host]:$port"
+    fi
+    if [[ "$verbose" == true ]]; then
+        printf '%s (%s) is %s\n' "$alias_name" "$endpoint" "$result"
+    fi
+    return "$status"
+}
+
+# Function to copy files using scp, with sheesh alias resolution
+copy_files() {
+    local source="${1:-}"
+    local dest="${2:-}"
+
+    if [ -z "$source" ] || [ -z "$dest" ]; then
+        echo -e "${RED}Error: Source and destination are required for 'cp'.${RESET}" >&2
+        usage
+        exit 1
+    fi
+
+    local scp_source="$source"
+    local scp_dest="$dest"
+    local scp_opts=""
+
+    if [[ "$source" == *:* ]]; then
+        local src_alias="${source%%:*}"
+        local src_path="${source#*:}"
+        if alias_exists "$src_alias"; then
+            local src_conn
+            src_conn=$(awk -F':' -v alias="$src_alias" '$0 !~ /^[[:space:]]*(#|$)/ && index($0, ":") && $1 == alias {sub($1":", ""); print; exit}' "$CONFIG_FILE")
+            if [[ "$src_conn" == "ssh "* ]]; then
+                echo -e "${RED}Error: Alias '${src_alias}' uses a full SSH command, which is not supported by 'cp'.${RESET}" >&2
+                exit 1
+            fi
+            local src_host="${src_conn%% *}"
+            if [[ "$src_conn" == *" "* ]]; then
+                local src_ssh_opts="${src_conn#* }"
+                scp_opts+=" ${src_ssh_opts//-p /-P }"
+            fi
+            scp_source="${src_host}:${src_path}"
+        fi
+    fi
+
+    if [[ "$dest" == *:* ]]; then
+        local dst_alias="${dest%%:*}"
+        local dst_path="${dest#*:}"
+        if alias_exists "$dst_alias"; then
+            local dst_conn
+            dst_conn=$(awk -F':' -v alias="$dst_alias" '$0 !~ /^[[:space:]]*(#|$)/ && index($0, ":") && $1 == alias {sub($1":", ""); print; exit}' "$CONFIG_FILE")
+            if [[ "$dst_conn" == "ssh "* ]]; then
+                echo -e "${RED}Error: Alias '${dst_alias}' uses a full SSH command, which is not supported by 'cp'.${RESET}" >&2
+                exit 1
+            fi
+            local dst_host="${dst_conn%% *}"
+            if [[ "$dst_conn" == *" "* ]]; then
+                local dst_ssh_opts="${dst_conn#* }"
+                scp_opts+=" ${dst_ssh_opts//-p /-P }"
+            fi
+            scp_dest="${dst_host}:${dst_path}"
+        fi
+    fi
+
+    scp_opts="${scp_opts# }"  # trim leading space
+
+    echo -e "${BOLD}Copying '${LIGHT_YELLOW}${source}${RESET}${BOLD}' to '${LIGHT_YELLOW}${dest}${RESET}${BOLD}'...${RESET}"
+    echo "Executing: scp${scp_opts:+ $scp_opts} $scp_source $scp_dest"
+    # shellcheck disable=SC2086
+    scp $scp_opts "$scp_source" "$scp_dest"
 }
 
 # Function to install bash completions
@@ -260,6 +509,16 @@ case "$COMMAND" in
         ;;
     connect|c)
         connect_to_alias "$@"
+        ;;
+    ping)
+        if ping_alias "$@"; then
+            exit 0
+        else
+            exit 1
+        fi
+        ;;
+    cp)
+        copy_files "$@"
         ;;
     list|ls)
         list_connections
