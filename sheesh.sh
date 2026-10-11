@@ -26,8 +26,10 @@ LIGHT_CYAN='\033[1;36m'
 # Configuration file path
 CONFIG_FILE="$HOME/.sheesh"
 
-# Ensure config file exists
-touch "$CONFIG_FILE"
+# Ping only reads configuration; keep the existing initialization for other commands.
+if [[ "${1:-}" != ping ]]; then
+    touch "$CONFIG_FILE"
+fi
 
 # Returns true for usable connection entries in ~/.sheesh.
 is_config_entry() {
@@ -45,6 +47,9 @@ usage() {
     echo -e "      Example: $(basename "$0") ${LIGHT_GREEN}add${RESET} jump 'ssh -J user@jumphost user@targetserver'"
     echo -e "  ${LIGHT_GREEN}connect${RESET} ${LIGHT_BLUE}<alias>${RESET} (or ${LIGHT_GREEN}c${RESET} ${LIGHT_BLUE}<alias>${RESET})"
     echo -e "      Example: $(basename "$0") ${LIGHT_GREEN}connect${RESET} myserver"
+    echo -e "  ${LIGHT_GREEN}ping${RESET} ${LIGHT_BLUE}<alias> [--verbose]${RESET}"
+    echo -e "      Checks TCP reachability using nc (exit 0 if reachable, otherwise 1)."
+    echo -e "      Example: $(basename "$0") ${LIGHT_GREEN}ping${RESET} myserver --verbose"
     echo -e "  ${LIGHT_GREEN}cp${RESET} ${LIGHT_BLUE}<source>${RESET} ${LIGHT_BLUE}<destination>${RESET}"
     echo -e "      Either source or destination can be ${LIGHT_BLUE}alias:path${RESET} using a saved connection."
     echo -e "      Example: $(basename "$0") ${LIGHT_GREEN}cp${RESET} myserver:/etc/hostname ./hostname_copy"
@@ -223,6 +228,167 @@ edit_connection() {
     echo "Connection '$alias_name' updated."
 }
 
+# Ping extracts the endpoint without executing saved SSH arguments.
+ping_error() {
+    printf 'Error: %s\n' "$1" >&2
+    return 1
+}
+
+ping_alias() {
+    local alias_name='' verbose=false arg
+    for arg in "$@"; do
+        case "$arg" in
+            --verbose)
+                if [[ "$verbose" == true ]]; then
+                    ping_error "Usage: sheesh ping <server> [--verbose]"
+                    return 1
+                fi
+                verbose=true
+                ;;
+            -*)
+                ping_error "Unknown ping option: $arg"
+                return 1
+                ;;
+            *)
+                if [[ -n "$alias_name" || -z "$arg" ]]; then
+                    ping_error "Usage: sheesh ping <server> [--verbose]"
+                    return 1
+                fi
+                alias_name="$arg"
+                ;;
+        esac
+    done
+    if [[ -z "$alias_name" ]]; then
+        ping_error "Usage: sheesh ping <server> [--verbose]"
+        return 1
+    fi
+    if [[ ! -f "$CONFIG_FILE" || ! -r "$CONFIG_FILE" ]]; then
+        ping_error "Cannot read server list: $CONFIG_FILE"
+        return 1
+    fi
+
+    local line connection_details='' found=false
+    # Bash comparison keeps aliases literal, including regex characters and backslashes.
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if is_config_entry "$line" && [[ "${line%%:*}" == "$alias_name" ]]; then
+            connection_details="${line#*:}"
+            found=true
+            break
+        fi
+    done < "$CONFIG_FILE"
+    if [[ "$found" == false ]]; then
+        ping_error "Alias '$alias_name' not found."
+        return 1
+    fi
+
+    # Tokenize shell-style quotes/escapes as data. Never expand or evaluate the entry.
+    local -a words=()
+    local token='' quote='' char escaped=false started=false i
+    for (( i=0; i<${#connection_details}; i++ )); do
+        char="${connection_details:i:1}"
+        if [[ "$escaped" == true ]]; then
+            token+="$char"
+            escaped=false
+        elif [[ "$quote" == "'" ]]; then
+            if [[ "$char" == "'" ]]; then quote=''; else token+="$char"; fi
+        elif [[ "$char" == \\ ]]; then
+            escaped=true
+            started=true
+        elif [[ -n "$quote" ]]; then
+            if [[ "$char" == "$quote" ]]; then quote=''; else token+="$char"; fi
+        elif [[ "$char" == \" || "$char" == "'" ]]; then
+            quote="$char"
+            started=true
+        elif [[ "$char" == ' ' || "$char" == $'\t' ]]; then
+            if [[ "$started" == true ]]; then words+=("$token"); fi
+            token=''
+            started=false
+        else
+            token+="$char"
+            started=true
+        fi
+    done
+    if [[ -n "$quote" || "$escaped" == true ]]; then
+        ping_error "Unterminated quote or escape for alias '$alias_name'."
+        return 1
+    fi
+    if [[ "$started" == true ]]; then words+=("$token"); fi
+
+    local host='' port=22 seen_port=false arg flag value j
+    i=0
+    if [[ "${words[0]:-}" == ssh ]]; then i=1; fi
+    while (( i < ${#words[@]} )); do
+        arg="${words[i]}"
+        if [[ "$arg" == -- ]]; then
+            i=$((i + 1))
+            if [[ -z "$host" ]]; then host="${words[i]:-}"; fi
+            break
+        elif [[ "$arg" == -* ]]; then
+            # Skip SSH option operands so keys, jump hosts, and forwarding targets
+            # cannot be mistaken for the destination. Unknown flags are ignored.
+            for (( j=1; j<${#arg}; j++ )); do
+                flag="${arg:j:1}"
+                case "$flag" in
+                    B|b|c|D|E|e|F|I|i|J|L|l|m|O|o|P|p|Q|R|S|W|w)
+                        value="${arg:j+1}"
+                        if [[ -z "$value" ]]; then
+                            i=$((i + 1))
+                            value="${words[i]:-}"
+                        fi
+                        if [[ "$flag" == p ]]; then
+                            if [[ "$seen_port" == true || ! "$value" =~ ^[0-9]{1,5}$ ]]; then
+                                ping_error "Invalid, missing, or duplicate port for alias '$alias_name'."
+                                return 1
+                            fi
+                            port=$((10#$value))
+                            if (( port < 1 || port > 65535 )); then
+                                ping_error "Port must be between 1 and 65535."
+                                return 1
+                            fi
+                            seen_port=true
+                        fi
+                        break
+                        ;;
+                esac
+            done
+        elif [[ -z "$host" ]]; then
+            host="$arg"
+        fi
+        i=$((i + 1))
+    done
+    if [[ "$host" == *@* ]]; then
+        if [[ ! "$host" =~ ^[a-zA-Z0-9_.-]+@[^@]+$ ]]; then
+            ping_error "Invalid destination for alias '$alias_name'."
+            return 1
+        fi
+        host="${host#*@}"
+    fi
+    if [[ "$host" == \[*\] ]]; then
+        host="${host:1:${#host}-2}"
+    fi
+    if [[ ! "$host" =~ ^[a-zA-Z0-9_:][a-zA-Z0-9_.:%-]*$ ]]; then
+        ping_error "Missing or invalid host for alias '$alias_name'."
+        return 1
+    fi
+    if ! command -v nc >/dev/null 2>&1; then
+        ping_error "nc is required for ping; install netcat."
+        return 1
+    fi
+
+    local status=1 result=unreachable endpoint="$host:$port"
+    if nc -z -w 5 "$host" "$port" >/dev/null 2>&1; then
+        status=0
+        result=reachable
+    fi
+    if [[ "$host" == *:* ]]; then
+        endpoint="[$host]:$port"
+    fi
+    if [[ "$verbose" == true ]]; then
+        printf '%s (%s) is %s\n' "$alias_name" "$endpoint" "$result"
+    fi
+    return "$status"
+}
+
 # Function to copy files using scp, with sheesh alias resolution
 copy_files() {
     local source="${1:-}"
@@ -343,6 +509,13 @@ case "$COMMAND" in
         ;;
     connect|c)
         connect_to_alias "$@"
+        ;;
+    ping)
+        if ping_alias "$@"; then
+            exit 0
+        else
+            exit 1
+        fi
         ;;
     cp)
         copy_files "$@"

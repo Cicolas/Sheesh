@@ -7,12 +7,39 @@ _sheesh_completions() {
 
     local config_file="$HOME/.sheesh"
     # Define the main commands your script accepts
-    local main_commands="add connect c list ls remove rm edit cp help completions"
+    local main_commands="add connect c list ls remove rm edit cp ping help completions"
 
     # Scenario 1: Completing the main command itself
     # This happens when COMP_CWORD is 1 (i.e., we are completing the word right after "sheesh" or "sheesh.sh")
     if [[ ${COMP_CWORD} -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "${main_commands}" -- "$cur_word") )
+        return 0
+    fi
+
+    # Ping allows the alias and --verbose in either order.
+    if [[ "${COMP_WORDS[1]:-}" == ping ]]; then
+        local has_alias=false has_verbose=false word index
+        local -a candidates=()
+        COMPREPLY=()
+        for (( index=2; index<COMP_CWORD; index++ )); do
+            word="${COMP_WORDS[index]}"
+            if [[ "$word" == --verbose ]]; then
+                has_verbose=true
+            else
+                has_alias=true
+            fi
+        done
+        if [[ "$has_alias" == false && -r "$config_file" ]]; then
+            mapfile -t candidates < <(awk -F: '$0 !~ /^[[:space:]]*(#|$)/ && index($0, ":") {print $1}' "$config_file" 2>/dev/null)
+        fi
+        if [[ "$has_verbose" == false ]]; then
+            candidates+=(--verbose)
+        fi
+        for word in "${candidates[@]}"; do
+            if [[ "$word" == "$cur_word"* ]]; then
+                COMPREPLY+=("$word")
+            fi
+        done
         return 0
     fi
 

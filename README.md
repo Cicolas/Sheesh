@@ -77,6 +77,20 @@ sheesh <command> [arguments...]
     sheesh c devdb
     ```
 
+*   **`ping <server> [--verbose]`**: Checks a saved server's TCP port using `nc -z -w 5 host port`. Requires netcat (`nc`) with these options available.
+    ```bash
+    sheesh ping webserver
+    echo $?  # 0 if reachable; 1 if unreachable or the check fails
+    sheesh ping webserver --verbose
+    # webserver (mywebserver.com:22) is reachable
+    sheesh ping --verbose webserver  # Either argument order works
+    ```
+    Probes are silent unless `--verbose` is supplied, which prints a reachable/unreachable result. Validation and dependency errors always go to stderr. All failures return `1`.
+
+    Saved entries may use `host`, `user@host`, or a full `ssh` command, with SSH flags before or after the destination. Ping extracts the destination and `-p <port>` (also `-p2222`); the port defaults to `22`. Other options are ignored, with standard SSH option operands skipped when finding the host. IPv6 addresses may be raw or bracketed. Ports must be between `1` and `65535`; duplicate port options are rejected.
+
+    Quoted and escaped arguments are read as text without executing saved commands or expanding variables. Jump-host, proxy, and other SSH options do not affect the probe: ping always connects directly to the extracted destination. It does not resolve SSH configuration (including `-o Port=...`), modify the server list, or create a missing list. It checks TCP reachability, not SSH authentication. The five-second timeout follows the installed netcat implementation's behavior.
+
 *   **`remove <alias>` (or `rm <alias>`)**: Removes a saved SSH connection.
     ```bash
     sheesh remove oldserver
