@@ -89,8 +89,6 @@ sheesh <command> [arguments...]
 
     Saved entries may use `host`, `user@host`, or a full `ssh` command, with SSH flags before or after the destination. Ping extracts the destination and `-p <port>` (also `-p2222`); the port defaults to `22`. Other options are ignored, with standard SSH option operands skipped when finding the host. IPv6 addresses may be raw or bracketed. Ports must be between `1` and `65535`; duplicate port options are rejected.
 
-    Quoted and escaped arguments are read as text without executing saved commands or expanding variables. Jump-host, proxy, and other SSH options do not affect the probe: ping always connects directly to the extracted destination. It does not resolve SSH configuration (including `-o Port=...`), modify the server list, or create a missing list. It checks TCP reachability, not SSH authentication. The five-second timeout follows the installed netcat implementation's behavior.
-
 *   **`remove <alias>` (or `rm <alias>`)**: Removes a saved SSH connection.
     ```bash
     sheesh remove oldserver
